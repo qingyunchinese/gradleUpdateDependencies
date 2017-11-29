@@ -1,0 +1,93 @@
+task gradleReport() {
+
+    doLast {
+
+        project.evaluationDependsOnChildren()
+
+        def android = project.getProperties().get("android")
+
+        def defaultConfig = android.getProperties().get("defaultConfig")
+
+        def versionCode = defaultConfig.getProperties().get("versionCode")
+
+        def file = file(project.buildDir.path + "/outputs/versionCode_${versionCode}_report.json")
+
+        file.createNewFile()
+
+        def androidSDK = android.getProperties().get("compileSdkVersion")
+
+        def googleServiceCode = ""
+
+        HashMap<String, Coordinate> coordinateHashMap = new HashMap<>()
+
+        project.configurations.findAll {
+            if (it.canBeResolved) {
+                it.resolvedConfiguration.resolvedArtifacts.findAll() {
+                    resolvedArtifact ->
+                        def moduleVersionIdentifier = resolvedArtifact.moduleVersion.id
+                        if (moduleVersionIdentifier.group.equalsIgnoreCase("com.google.android.gms")) {
+                            googleServiceCode = moduleVersionIdentifier.version
+                        }
+                }
+            }
+
+            List<Dependency> dependencyList = it.dependencies.findAll {
+                dependency ->
+                    if (dependency.group != null && dependency.version != null) {
+                        Coordinate coordinate = new Coordinate(dependency)
+                        coordinateHashMap.put(coordinate.key, coordinate)
+                    }
+                    dependency.group != null && dependency.version != null
+            }.collect { dependency ->
+                project.dependencies.create("${dependency.group}:${dependency.name}:latest.release") {
+                    transitive = false
+                }
+            }
+            Configuration latestConfiguration = it.copyRecursive().setTransitive(false)
+
+            if (latestConfiguration.metaClass.respondsTo(latestConfiguration, "setCanBeResolved", Boolean)) {
+                latestConfiguration.setCanBeResolved(true)
+            }
+            latestConfiguration.dependencies.clear()
+            latestConfiguration.dependencies.addAll(dependencyList)
+            LenientConfiguration lenient = latestConfiguration.resolvedConfiguration.lenientConfiguration
+            Set<ResolvedDependency> resolved = lenient.getFirstLevelModuleDependencies(Specs.SATISFIES_ALL)
+            resolved.each {
+                coordinateHashMap.get(it.module.id.group + ":" + it.module.id.name).setLatestVersion(it.module.id.version)
+            }
+        }
+        System.out.println("--------------projectBaseInfo--------------")
+        System.out.printf("%-25s %12s\n", "name", "value")
+        System.out.printf("%-25s: %12s\n", "ProjectVersionCode", versionCode)
+        System.out.printf("%-25s: %12s\n", "compileSdkVersion", androidSDK)
+        System.out.printf("%-25s: %12s\n", "googleServiceVersionCode", googleServiceCode)
+        System.out.println("--------------library--------------")
+        System.out.printf("%-50s %20s %20s\n", "library", "currentVersion", "latestVersion")
+        coordinateHashMap.each {
+            key, value ->
+                System.out.printf("%-50s: %20s %20s\n", key, value.currentVersion, value.latestVersion)
+        }
+        file.write(groovy.json.JsonOutput.toJson(coordinateHashMap))
+    }
+}
+
+class Coordinate {
+    String group
+    String name
+    String currentVersion
+    String latestVersion
+
+    void setLatestVersion(String version) {
+        this.latestVersion = version
+    }
+
+    Coordinate(Dependency dependency) {
+        this.group = dependency.group
+        this.name = dependency.name
+        this.currentVersion = dependency.version
+    }
+
+    String getKey() {
+        return this.group + ":" + this.name
+    }
+}
